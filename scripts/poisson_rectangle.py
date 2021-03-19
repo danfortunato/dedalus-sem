@@ -5,7 +5,7 @@ from dedalus.core import coords, distributor, basis, field, operators, problems,
 from dedalus.tools.config import config
 
 config['matrix construction']['STORE_EXPANDED_MATRICES'] = "False"
-config['linear algebra']['MATRIX_FACTORIZER'] = "SuperLUNaturalFactorized"
+config['linear algebra']['MATRIX_FACTORIZER'] = "SuperLUNaturalFactorizedTranspose"
 
 
 class PoissonRectangle:
@@ -30,8 +30,10 @@ class PoissonRectangle:
         self.yb = yb = basis.ChebyshevT(c.coords[1], Ny, bounds=(0, Ly))
         self.x = x = xb.local_grid(1)
         self.y = y = yb.local_grid(1)
+        xb2 = xb._new_a_b(1.5, 1.5)
+        yb2 = yb._new_a_b(1.5, 1.5)
         # Forcing
-        self.f = f = field.Field(name='f', dist=d, bases=(xb, yb), dtype=dtype)
+        self.f = f = field.Field(name='f', dist=d, bases=(xb2, yb2), dtype=dtype)
         # Boundary conditions
         self.uL = uL = field.Field(name='f', dist=d, bases=(yb,), dtype=dtype)
         self.uR = uR = field.Field(name='f', dist=d, bases=(yb,), dtype=dtype)
@@ -39,8 +41,6 @@ class PoissonRectangle:
         self.uB = uB = field.Field(name='f', dist=d, bases=(xb,), dtype=dtype)
         # Fields
         self.u = u = field.Field(name='u', dist=d, bases=(xb, yb), dtype=dtype)
-        xb2 = xb._new_a_b(1.5, 1.5)
-        yb2 = yb._new_a_b(1.5, 1.5)
         self.tx1 = tx1 = field.Field(name='tx1', dist=d, bases=(xb2,), dtype=dtype)
         self.tx2 = tx2 = field.Field(name='tx2', dist=d, bases=(xb2,), dtype=dtype)
         self.ty1 = ty1 = field.Field(name='ty1', dist=d, bases=(yb2,), dtype=dtype)
@@ -73,15 +73,31 @@ class PoissonRectangle:
             L[-4, Nx*Ny+2*Nx+1*Ny+Ny-2] = 1
             L[-3, Nx*Ny+2*Nx+1*Ny+Ny-1] = 1
         solver.subproblems[0].L_min = L
+        # Neumann operators
+        ux = operators.Differentiate(u, c.coords[0])
+        uy = operators.Differentiate(u, c.coords[1])
+        self.duL = - ux(x='left')
+        self.duR = ux(x='right')
+        self.duT = uy(y='right')
+        self.duB = - uy(y='left')
 
-    def dirichlet_to_interior(self, f, uL, uR, uT, uB, layout):
+    def set_interior_forcing(self, f):
         """
-        Produce interior solution given forcing and Dirichlet data.
+        Set interior forcing data on the grid.
 
         Parameters
         ----------
         f : number or ndarray
-            Interior forcing data. Must be broadcastable to shape (Nx, Ny).
+            Interior forcing data on the grid. Must be broadcastable to shape (Nx, Ny).
+        """
+        self.f['g'] = f
+
+    def dirichlet_to_interior(self, uL, uR, uT, uB, layout):
+        """
+        Produce interior solution given Dirichlet data.
+
+        Parameters
+        ----------
         uL, uR : numbers or ndarrays
             Left and right Dirichlet data. Must be broadcastable to shape (1, Ny).
         uT, uB : numbers or ndarrays
@@ -94,7 +110,6 @@ class PoissonRectangle:
         u : ndarray
             Interior solution data. Shape (Nx, Ny).
         """
-        self.f[layout] = f
         self.uL[layout] = uL
         self.uR[layout] = uR
         self.uT[layout] = uT
@@ -121,22 +136,18 @@ class PoissonRectangle:
             Top and bottom Neumann data. Shape (Nx, 1).
         """
         self.u[layout] = u
-        ux = operators.Differentiate(self.u, self.c.coords[0]).evaluate()
-        uy = operators.Differentiate(self.u, self.c.coords[1]).evaluate()
-        duL = (-ux(x='left')).evaluate()
-        duR = ux(x='right').evaluate()
-        duT = uy(y='right').evaluate()
-        duB = (-uy(y='left')).evaluate()
+        duL = self.duL.evaluate()
+        duR = self.duR.evaluate()
+        duT = self.duT.evaluate()
+        duB = self.duB.evaluate()
         return duL[layout], duR[layout], duT[layout], duB[layout]
 
-    def dirichlet_to_neumann(self, f, uL, uR, uT, uB, layout):
+    def dirichlet_to_neumann(self, uL, uR, uT, uB, layout):
         """
-        Produce Neumann data given forcing and Dirichlet data.
+        Produce Neumann data given Dirichlet data.
 
         Parameters
         ----------
-        f : number or ndarray
-            Interior forcing data. Must be broadcastable to shape (Nx, Ny).
         uL, uR : numbers or ndarrays
             Left and right Dirichlet data. Must be broadcastable to shape (1, Ny).
         uT, uB : numbers or ndarrays
@@ -151,7 +162,7 @@ class PoissonRectangle:
         duT, duB : numbers or ndarrays
             Top and bottom Neumann data. Shape (Nx, 1).
         """
-        u = self.dirichlet_to_interior(f, uL, uR, uT, uB, layout)
+        u = self.dirichlet_to_interior(uL, uR, uT, uB, layout)
         return self.interior_to_neumann(u, layout)
 
 
@@ -178,11 +189,12 @@ if __name__ == "__main__":
     # Boundary data
     uL = uR = uT = uB = 0
     # Test solution
-    u = solver.dirichlet_to_interior(f, uL, uR, uT, uB, layout='g')
+    solver.set_interior_forcing(f)
+    u = solver.dirichlet_to_interior(uL, uR, uT, uB, layout='g')
     u_true = np.sin(Kx*x) * np.sin(Ky*y)
     u_error = np.max(np.abs(u - u_true))
     print('Interior max error:', u_error)
-    du = solver.dirichlet_to_neumann(f, uL, uR, uT, uB, layout='g')
+    du = solver.dirichlet_to_neumann(uL, uR, uT, uB, layout='g')
     duL_true = - Kx * np.sin(Ky*y)
     duR_true = + Kx * np.sin(Ky*y)
     duT_true = + Ky * np.sin(Kx*x)
