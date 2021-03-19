@@ -23,6 +23,11 @@ class PoissonRectangle:
     """
 
     def __init__(self, Nx, Ny, Lx, Ly, dtype):
+        self.Nx = Nx
+        self.Ny = Ny
+        self.Lx = Lx
+        self.Ly = Ly
+        self.dtype = dtype
         # Bases
         self.c = c = coords.CartesianCoordinates('x', 'y')
         self.d = d = distributor.Distributor((c,))
@@ -165,9 +170,61 @@ class PoissonRectangle:
         u = self.dirichlet_to_interior(uL, uR, uT, uB, layout)
         return self.interior_to_neumann(u, layout)
 
+    def build_operators(self, layout, verbose=False):
+        """
+        Build solution and DtN operators.
+        """
+        Nx, Ny = self.Nx, self.Ny
+        uL = np.zeros((1, Ny), dtype=self.dtype)
+        uR = np.zeros((1, Ny), dtype=self.dtype)
+        uT = np.zeros((Nx, 1), dtype=self.dtype)
+        uB = np.zeros((Nx, 1), dtype=self.dtype)
+        sol_cols = []
+        dtn_cols = []
+        if verbose:
+            print('  traversing top')
+        for nx in range(self.Nx):
+            uT[nx, 0] = 1
+            u = self.dirichlet_to_interior(uL, uR, uT, uB, layout)
+            sol_cols.append(u.ravel())
+            duL, duR, duT, duB = self.interior_to_neumann(u, layout)
+            dtn_cols.append(np.concatenate((duT.ravel(), duR.ravel(), duB.ravel(), duL.ravel())))
+            uT[:] = 0
+        if verbose:
+            print('  traversing right')
+        for ny in range(Ny):
+            uR[0, ny] = 1
+            u = self.dirichlet_to_interior(uL, uR, uT, uB, layout)
+            sol_cols.append(u.ravel())
+            duL, duR, duT, duB = self.interior_to_neumann(u, layout)
+            dtn_cols.append(np.concatenate((duT.ravel(), duR.ravel(), duB.ravel(), duL.ravel())))
+            uR[:] = 0
+        if verbose:
+            print('  traversing bottom')
+        for nx in range(Nx):
+            uB[nx, 0] = 1
+            u = self.dirichlet_to_interior(uL, uR, uT, uB, layout)
+            sol_cols.append(u.ravel())
+            duL, duR, duT, duB = self.interior_to_neumann(u, layout)
+            dtn_cols.append(np.concatenate((duT.ravel(), duR.ravel(), duB.ravel(), duL.ravel())))
+            uB[:] = 0
+        if verbose:
+            print('  traversing left')
+        for ny in range(Ny):
+            uL[0, ny] = 1
+            u = self.dirichlet_to_interior(uL, uR, uT, uB, layout)
+            sol_cols.append(u.ravel())
+            duL, duR, duT, duB = self.interior_to_neumann(u, layout)
+            dtn_cols.append(np.concatenate((duT.ravel(), duR.ravel(), duB.ravel(), duL.ravel())))
+            uL[:] = 0
+        sol = np.array(sol_cols).T
+        dtn = np.array(dtn_cols).T
+        return sol, dtn
+
 
 if __name__ == "__main__":
 
+    print()
     print('Test problem: u = sin(2πx) sin(2πy) on [0,1]^2')
     # Parameters
     Nx = 32
@@ -181,7 +238,7 @@ if __name__ == "__main__":
     y = solver.y
     # Check matrix
     L = solver.solver.subproblems[0].L_min
-    print("Solver condition number:", np.linalg.cond(L.A))
+    print("  Solver condition number:", np.linalg.cond(L.A))
     # Forcing
     Kx = 2 * np.pi / Lx
     Ky = 2 * np.pi / Ly
@@ -193,7 +250,7 @@ if __name__ == "__main__":
     u = solver.dirichlet_to_interior(uL, uR, uT, uB, layout='g')
     u_true = np.sin(Kx*x) * np.sin(Ky*y)
     u_error = np.max(np.abs(u - u_true))
-    print('Interior max error:', u_error)
+    print('  Interior max error:', u_error)
     du = solver.dirichlet_to_neumann(uL, uR, uT, uB, layout='g')
     duL_true = - Kx * np.sin(Ky*y)
     duR_true = + Kx * np.sin(Ky*y)
@@ -201,5 +258,6 @@ if __name__ == "__main__":
     duB_true = - Ky * np.sin(Kx*x)
     du_true = [duL_true, duR_true, duT_true, duB_true]
     du_error = [np.max(np.abs(dui - dui_true)) for dui, dui_true in zip(du, du_true)]
-    print('Neumann max error:', np.max(du_error))
+    print('  Neumann max error:', np.max(du_error))
+    print()
 
