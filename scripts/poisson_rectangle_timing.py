@@ -13,13 +13,13 @@ Ny = 128
 Lx = 1
 Ly = 1
 dtype = np.float64
-layout = 'c'
 homogeneous = True
 use_schur_inv = True
+matsolver = "SuperLUColamdFactorized"
 plot_dtn = False
 
 # Solver
-solver = PoissonRectangle(Nx, Ny, Lx, Ly, dtype)
+solver = PoissonRectangle(Nx, Ny, Lx, Ly, dtype, matsolver=matsolver)
 solver.set_interior_forcing(0)
 
 # Build operators
@@ -45,7 +45,7 @@ print()
 if plot_dtn:
     plt.figure(figsize=(6,6))
     plt.imshow(dtn, interpolation='nearest')
-    plt.title('DtN map, layout %s' %layout)
+    plt.title('DtN map')
     plt.tight_layout()
     plt.savefig('dtn_matrix.pdf')
 

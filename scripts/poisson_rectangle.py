@@ -1,19 +1,14 @@
-# -*- coding: utf-8 -*-
 """PoissonRectangle class definition and tests."""
 
 import numpy as np
 import scipy.sparse as sp
 import scipy.linalg as linalg
-import scipy.sparse.linalg as spla
-from dedalus.core import coords, distributor, basis, field, operators, problems, solvers, timesteppers, arithmetic
-from dedalus.tools.config import config
+from dedalus.core import coords, distributor, basis, field, operators, problems, solvers
 from dedalus.tools.cache import CachedMethod
+from dedalus.libraries.matsolvers import matsolvers
 
-config['matrix construction']['STORE_EXPANDED_MATRICES'] = "False"
-config['matrix construction']['BC_TOP'] = "False"
-config['matrix construction']['TAU_LEFT'] = "False"
-config['linear algebra']['MATRIX_FACTORIZER'] = "SuperLUNaturalFactorizedTranspose"
 
+# Helper functions
 top_identity = lambda m, n: sp.eye(m, n)
 bottom_identity = lambda m, n: sp.eye(m, n, n-m)
 
@@ -30,9 +25,11 @@ class PoissonRectangle:
         Rectangle side lengths.
     dtype : dtype
         Solution dtype.
+    **kw
+        Other keywords passed to Dedalus solver.
     """
 
-    def __init__(self, Nx, Ny, Lx, Ly, dtype):
+    def __init__(self, Nx, Ny, Lx, Ly, dtype, **kw):
         self.Nx = Nx
         self.Ny = Ny
         self.Lx = Lx
@@ -72,7 +69,8 @@ class PoissonRectangle:
         problem.add_equation((u(y=0), uB))
         problem.add_equation((u(x=0), uL))
         # Solver
-        self.solver = solver = solvers.LinearBoundaryValueSolver(problem)
+        self.solver = solver = solvers.LinearBoundaryValueSolver(problem,
+            bc_top=False, tau_left=False, store_expanded_matrices=False, **kw)
         # Tau entries
         L = solver.subproblems[0].L_min.tolil()
         # Taus
@@ -254,7 +252,7 @@ class PoissonRectangle:
         return sol, dtn
 
     @CachedMethod
-    def _setup_schur(self, permc_spec='COLAMD', **kw):
+    def _setup_schur(self, matsolver=None):
         Nx, Ny = self.Nx, self.Ny
         N, M = self.N, self.M
         # Build partition matrices
@@ -283,7 +281,11 @@ class PoissonRectangle:
         L10 = SL1 @ L @ SR0.T
         L11 = SL1 @ L @ SR1.T
         # Schur setup
-        L00_LU = spla.splu(L00.tocsc(), permc_spec=permc_spec)
+        if matsolver is None:
+            matsolver = self.solver.matsolver
+        if isinstance(matsolver, str):
+            matsolver = matsolvers[matsolver.lower()]
+        L00_LU = matsolver(L00)
         L00_inv = L00_LU.solve
         L00_inv_L01 = L00_inv(L01.A)
         L11_comp = L11.A - L10 @ L00_inv_L01
