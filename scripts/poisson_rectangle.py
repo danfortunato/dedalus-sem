@@ -36,7 +36,7 @@ class PoissonRectangle:
         self.Ly = Ly
         self.dtype = dtype
         self.N = Nx * Ny
-        self.R = 2*Nx + 2*Ny + 4
+        self.R = 2*Nx + 2*Ny + 8
         self.M = self.N + self.R
         # Bases
         self.coords = coords = d3.CartesianCoordinates('x', 'y')
@@ -61,9 +61,13 @@ class PoissonRectangle:
         self.ty1 = ty1 = dist.Field(name='ty1', bases=yb2)
         self.ty2 = ty2 = dist.Field(name='ty2', bases=yb2)
         self.t1 = t1 = dist.Field(name='t1')
-        self.t2 = t2 = dist.Field(name='t1')
-        self.t3 = t3 = dist.Field(name='t1')
-        self.t4 = t4 = dist.Field(name='t1')
+        self.t2 = t2 = dist.Field(name='t2')
+        self.t3 = t3 = dist.Field(name='t3')
+        self.t4 = t4 = dist.Field(name='t4')
+        self.t5 = t5 = dist.Field(name='t5')
+        self.t6 = t6 = dist.Field(name='t6')
+        self.t7 = t7 = dist.Field(name='t7')
+        self.t8 = t8 = dist.Field(name='t8')
         # Substitutions
         Lap = d3.Laplacian
         Lift = d3.Lift
@@ -71,15 +75,19 @@ class PoissonRectangle:
                  Lift(ty1, xb2, -1) + Lift(ty2, xb2, -2))
         tau_T = Lift(t1, xb, -1) + Lift(t2, xb, -2)
         tau_B = Lift(t3, xb, -1) + Lift(t4, xb, -2)
-        tau_L = 0
-        tau_R = 0
+        tau_L = Lift(t5, yb, -1) + Lift(t6, yb, -2)
+        tau_R = Lift(t7, yb, -1) + Lift(t8, yb, -2)
         # Problem
-        self.problem = problem = d3.LBVP([u, tx1, tx2, ty1, ty2, t1, t2, t3, t4])
+        self.problem = problem = d3.LBVP([u, tx1, tx2, ty1, ty2, t1, t2, t3, t4, t5, t6, t7, t8])
         problem.add_equation((Lap(u) + tau_u, f))
         problem.add_equation((u(x=0) + tau_L, uL))
         problem.add_equation((u(x=Lx) + tau_R, uR))
         problem.add_equation((u(y=0) + tau_B, uB))
         problem.add_equation((u(y=Ly) + tau_T, uT))
+        problem.add_equation((tau_T(x=0) + tau_L(y=Ly), 0))
+        problem.add_equation((tau_T(x=Lx) + tau_R(y=Ly), 0))
+        problem.add_equation((tau_B(x=0) + tau_L(y=0), 0))
+        problem.add_equation((tau_B(x=Lx) + tau_R(y=0), 0))
         problem.add_equation((tx1(x=0), 0))
         problem.add_equation((tx2(x=0), 0))
         problem.add_equation((tx1(x=Lx), 0))
