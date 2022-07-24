@@ -3,7 +3,7 @@
 import numpy as np
 import scipy.sparse as sp
 import scipy.linalg as linalg
-from dedalus.core import coords, distributor, basis, field, operators, problems, solvers
+import dedalus.public as d3
 from dedalus.tools.cache import CachedMethod
 from dedalus.libraries.matsolvers import matsolvers
 
@@ -36,72 +36,68 @@ class PoissonRectangle:
         self.Ly = Ly
         self.dtype = dtype
         self.N = Nx * Ny
-        self.R = 2*Nx + 2*Ny
+        self.R = 2*Nx + 2*Ny + 4
         self.M = self.N + self.R
         # Bases
-        self.c = c = coords.CartesianCoordinates('x', 'y')
-        self.d = d = distributor.Distributor((c,))
-        self.xb = xb = basis.ChebyshevT(c.coords[0], Nx, bounds=(0, Lx))
-        self.yb = yb = basis.ChebyshevT(c.coords[1], Ny, bounds=(0, Ly))
+        self.coords = coords = d3.CartesianCoordinates('x', 'y')
+        self.dist = dist = d3.Distributor(coords, dtype=dtype)
+        self.xb = xb = d3.ChebyshevT(coords['x'], Nx, bounds=(0, Lx))
+        self.yb = yb = d3.ChebyshevT(coords['y'], Ny, bounds=(0, Ly))
         self.x = x = xb.local_grid(1)
         self.y = y = yb.local_grid(1)
-        xb2 = xb._new_a_b(1.5, 1.5)
-        yb2 = yb._new_a_b(1.5, 1.5)
+        xb2 = xb.derivative_basis(2)
+        yb2 = yb.derivative_basis(2)
         # Forcing
-        self.f = f = field.Field(name='f', dist=d, bases=(xb2, yb2), dtype=dtype)
+        self.f = f = dist.Field(name='f', bases=(xb, yb))
         # Boundary conditions
-        self.uL = uL = field.Field(name='f', dist=d, bases=(yb,), dtype=dtype)
-        self.uR = uR = field.Field(name='f', dist=d, bases=(yb,), dtype=dtype)
-        self.uT = uT = field.Field(name='f', dist=d, bases=(xb,), dtype=dtype)
-        self.uB = uB = field.Field(name='f', dist=d, bases=(xb,), dtype=dtype)
+        self.uL = uL = dist.Field(name='uL', bases=yb)
+        self.uR = uR = dist.Field(name='uR', bases=yb)
+        self.uB = uB = dist.Field(name='uB', bases=xb)
+        self.uT = uT = dist.Field(name='uT', bases=xb)
         # Fields
-        self.u = u = field.Field(name='u', dist=d, bases=(xb, yb), dtype=dtype)
-        self.tx1 = tx1 = field.Field(name='tx1', dist=d, bases=(xb2,), dtype=dtype)
-        self.tx2 = tx2 = field.Field(name='tx2', dist=d, bases=(xb2,), dtype=dtype)
-        self.ty1 = ty1 = field.Field(name='ty1', dist=d, bases=(yb2,), dtype=dtype)
-        self.ty2 = ty2 = field.Field(name='ty2', dist=d, bases=(yb2,), dtype=dtype)
+        self.u = u = dist.Field(name='u', bases=(xb, yb))
+        self.tx1 = tx1 = dist.Field(name='tx1', bases=xb2)
+        self.tx2 = tx2 = dist.Field(name='tx2', bases=xb2)
+        self.ty1 = ty1 = dist.Field(name='ty1', bases=yb2)
+        self.ty2 = ty2 = dist.Field(name='ty2', bases=yb2)
+        self.t1 = t1 = dist.Field(name='t1')
+        self.t2 = t2 = dist.Field(name='t1')
+        self.t3 = t3 = dist.Field(name='t1')
+        self.t4 = t4 = dist.Field(name='t1')
+        # Substitutions
+        Lap = d3.Laplacian
+        Lift = d3.Lift
+        tau_u = (Lift(tx1, yb2, -1) + Lift(tx2, yb2, -2) +
+                 Lift(ty1, xb2, -1) + Lift(ty2, xb2, -2))
+        tau_T = Lift(t1, xb, -1) + Lift(t2, xb, -2)
+        tau_B = Lift(t3, xb, -1) + Lift(t4, xb, -2)
+        tau_L = 0
+        tau_R = 0
         # Problem
-        Lap = lambda A: operators.Laplacian(A, c)
-        self.problem = problem = problems.LBVP([u, tx1, tx2, ty1, ty2])
-        problem.add_equation((Lap(u), f))
-        problem.add_equation((u(y=Ly), uT))
-        problem.add_equation((u(x=Lx), uR))
-        problem.add_equation((u(y=0), uB))
-        problem.add_equation((u(x=0), uL))
+        self.problem = problem = d3.LBVP([u, tx1, tx2, ty1, ty2, t1, t2, t3, t4])
+        problem.add_equation((Lap(u) + tau_u, f))
+        problem.add_equation((u(x=0) + tau_L, uL))
+        problem.add_equation((u(x=Lx) + tau_R, uR))
+        problem.add_equation((u(y=0) + tau_B, uB))
+        problem.add_equation((u(y=Ly) + tau_T, uT))
+        problem.add_equation((tx1(x=0), 0))
+        problem.add_equation((tx2(x=0), 0))
+        problem.add_equation((tx1(x=Lx), 0))
+        problem.add_equation((tx2(x=Lx), 0))
         # Solver
-        self.solver = solver = solvers.LinearBoundaryValueSolver(problem,
-            bc_top=False, tau_left=False, store_expanded_matrices=False, **kw)
-        # Tau entries
-        L = solver.subproblems[0].L_min.tolil()
-        # Taus
-        for nx in range(Nx):
-            L[Ny-1+nx*Ny, Nx*Ny+0*Nx+nx] = 1  # tx1 * Py1
-            L[Ny-2+nx*Ny, Nx*Ny+1*Nx+nx] = 1  # tx2 * Py2
-        for ny in range(Ny-2):
-            L[(Nx-1)*Ny+ny, Nx*Ny+2*Nx+0*Ny+ny] = 1  # ty1 * Px1
-            L[(Nx-2)*Ny+ny, Nx*Ny+2*Nx+1*Ny+ny] = 1  # ty2 * Px2
-        # BC taus not resolution safe
-        if Nx != Ny:
-            raise ValueError("Current implementation requires Nx == Ny.")
-        else:
-            # Remember L is left preconditoined but not right preconditioned
-            L[-7, Nx*Ny+2*Nx+0*Ny+Ny-2] = 1 # Right -2
-            L[-5, Nx*Ny+2*Nx+0*Ny+Ny-1] = 1 # Right -1
-            L[-3, Nx*Ny+2*Nx+1*Ny+Ny-2] = 1 # Left -2
-            L[-1, Nx*Ny+2*Nx+1*Ny+Ny-1] = 1 # Left -1
-        solver.subproblems[0].L_min = L.tocsr()
+        self.solver = solver = problem.build_solver(store_expanded_matrices=False, **kw)
         # Neumann operators
-        ux = operators.Differentiate(u, c.coords[0])
-        uy = operators.Differentiate(u, c.coords[1])
-        self.duL = - ux(x='left')
-        self.duR = ux(x='right')
-        self.duT = uy(y='right')
-        self.duB = - uy(y='left')
+        ux = d3.Differentiate(u, coords['x'])
+        uy = d3.Differentiate(u, coords['y'])
+        self.duL = - ux(x=0)
+        self.duR = ux(x=Lx)
+        self.duB = - uy(y=0)
+        self.duT = uy(y=Ly)
         # Neumann matrix
-        duT_mat = self.duT.expression_matrices(solver.subproblems[0], vars=[u])[u]
+        duL_mat = self.duL.expression_matrices(solver.subproblems[0], vars=[u])[u]
         duR_mat = self.duR.expression_matrices(solver.subproblems[0], vars=[u])[u]
         duB_mat = self.duB.expression_matrices(solver.subproblems[0], vars=[u])[u]
-        duL_mat = self.duL.expression_matrices(solver.subproblems[0], vars=[u])[u]
+        duT_mat = self.duT.expression_matrices(solver.subproblems[0], vars=[u])[u]
         self.interior_to_neumann_matrix = sp.vstack([duT_mat, duR_mat, duB_mat, duL_mat], format='csr')
 
     def set_interior_forcing(self, f):
@@ -153,9 +149,9 @@ class PoissonRectangle:
 
         Returns
         -------
-        duL, duR : numbers or ndarrays
+        duL, duR : ndarrays
             Left and right Neumann data. Shape (1, Ny).
-        duT, duB : numbers or ndarrays
+        duT, duB : ndarrays
             Top and bottom Neumann data. Shape (Nx, 1).
         """
         self.u[layout] = u
@@ -180,9 +176,9 @@ class PoissonRectangle:
 
         Returns
         -------
-        duL, duR : numbers or ndarrays
+        duL, duR : ndarrays
             Left and right Neumann data. Shape (1, Ny).
-        duT, duB : numbers or ndarrays
+        duT, duB : ndarrays
             Top and bottom Neumann data. Shape (Nx, 1).
         """
         u = self.dirichlet_to_interior_naive(uL, uR, uT, uB, layout)
@@ -384,43 +380,65 @@ class PoissonRectangle:
         dtn = self.interior_to_neumann_vectorized(sol)
         return sol, dtn
 
+    def pack_boundary_data(self, L, R, T, B):
+        """
+        Pack boundary data arrays into single vector.
+
+        Parameters
+        ----------
+        L, R : numbers or ndarrays
+            Left and right boundary data. Must be broadcastable to shape (1, Ny).
+        T, B : numbers or ndarrays
+            Top and bottom boundary data. Must be broadcastable to shape (Nx, 1).
+
+        Returns
+        -------
+        out : ndarray
+            Combined vector of boundary data ordered as (T, R, B, L).
+        """
+        out = np.zeros(2*self.Nx + 2*self.Ny)
+        out[0*Nx+0*Ny:1*Nx+0*Ny] = T.ravel()
+        out[1*Nx+0*Ny:1*Nx+1*Ny] = R.ravel()
+        out[1*Nx+1*Ny:2*Nx+1*Ny] = B.ravel()
+        out[2*Nx+1*Ny:2*Nx+2*Ny] = L.ravel()
+        return out
+
 
 if __name__ == "__main__":
 
     print()
-    print('Test problem: u = sin(2πx) sin(2πy) on [0,1]^2')
+    print("Test problem: u = sin(2πx) sin(2πy) on [0,1/2]*[0,1]")
     # Parameters
-    Nx = 32
+    Nx = 24
     Ny = 32
-    Lx = 1
+    Lx = 0.5
     Ly = 1
     dtype = np.float64
     # Solver
     solver = PoissonRectangle(Nx, Ny, Lx, Ly, dtype)
+    L = solver.solver.subproblems[0].L_min
+    print(f"\n  Solver condition number: {np.linalg.cond(L.A):.3e}")
+    # Forcing
+    Kx = 2 * np.pi
+    Ky = 2 * np.pi
     x = solver.x
     y = solver.y
-    # Check matrix
-    L = solver.solver.subproblems[0].L_min
-    print("  Solver condition number:", np.linalg.cond(L.A))
-    # Forcing
-    Kx = 2 * np.pi / Lx
-    Ky = 2 * np.pi / Ly
     f = - (Kx**2 + Ky**2) * np.sin(Kx*x) * np.sin(Ky*y)
+    solver.set_interior_forcing(f)
     # Boundary data
     uL = uR = uT = uB = 0
-    # Test solution
-    solver.set_interior_forcing(f)
-    u = solver.dirichlet_to_interior_naive(uL, uR, uT, uB, layout='g')
+    # Test interior solution
     u_true = np.sin(Kx*x) * np.sin(Ky*y)
-    u_error = np.max(np.abs(u - u_true))
-    print('  Interior max error:', u_error)
-    du = solver.dirichlet_to_neumann_naive(uL, uR, uT, uB, layout='g')
-    duL_true = - Kx * np.sin(Ky*y)
-    duR_true = + Kx * np.sin(Ky*y)
-    duT_true = + Ky * np.sin(Kx*x)
-    duB_true = - Ky * np.sin(Kx*x)
+    u = solver.dirichlet_to_interior_naive(uL, uR, uT, uB, layout='g')
+    print(f"  Interior max error (naive): {np.max(np.abs(u - u_true)):.3e}")
+    # Test Neumann solution
+    duL_true = - Kx * np.cos(Kx*0) * np.sin(Ky*y)
+    duR_true = Kx * np.cos(Kx*Lx) * np.sin(Ky*y)
+    duT_true = Ky * np.sin(Kx*x) * np.cos(Ky*Ly)
+    duB_true = - Ky * np.sin(Kx*x) * np.cos(Ky*0)
     du_true = [duL_true, duR_true, duT_true, duB_true]
-    du_error = [np.max(np.abs(dui - dui_true)) for dui, dui_true in zip(du, du_true)]
-    print('  Neumann max error:', np.max(du_error))
+    du_true = solver.pack_boundary_data(*du_true)
+    du = solver.dirichlet_to_neumann_naive(uL, uR, uT, uB, layout='g')
+    du = solver.pack_boundary_data(*du)
+    print(f"  Neumann max error: {np.max(np.abs(du - du_true)):.3e}")
     print()
-
